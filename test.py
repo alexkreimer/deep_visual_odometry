@@ -11,33 +11,12 @@ from tensorflow.keras.models import model_from_json, load_model
 from tensorflow.keras.callbacks import TensorBoard
 import tensorflow.keras as keras
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import pykitti
 import functools
 import argparse
-
-def tfdata_generator(dataset, is_training, batch_size=128):
-    '''Construct a data generator using tf.Dataset'''
-
-    def preprocess_fn(image, label):
-        '''A transformation function to preprocess raw data
-        into trainable input. '''
-        x = tf.reshape(tf.cast(image, tf.float32), (28, 28, 1))
-        y = tf.one_hot(tf.cast(label, tf.uint8), _NUM_CLASSES)
-        return x, y
-
-    #if is_training:
-    #    dataset = dataset.shuffle(1000)  # depends on sample size
-
-    # Transform and batch data at the same time
-    # dataset = dataset.apply(tf.contrib.data.map_and_batch(
-    #     preprocess_fn, batch_size,
-    #     num_parallel_batches=4,  # cpu cores
-    #     drop_remainder=True if is_training else False))
-    dataset = dataset.repeat()
-    #dataset = dataset.prefetch(tf.contrib.data.AUTOTUNE)
-
-    return dataset
+import os
 
 def _parse_function(image_path1, image_path2, label, target_size):
     images = []
@@ -48,6 +27,49 @@ def _parse_function(image_path1, image_path2, label, target_size):
         image_decoded = tf.math.divide(image_decoded, tf.constant(255.0))
         images.append(tf.image.resize_images(image_decoded, target_size))
     return tf.concat(images, axis=2), label
+
+
+class kitti_data:
+    def __init__(self, size=None, basedir='/home/akreimer/work/dataset'):
+        drive_list = ['00', '01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
+        self.data = {}
+        for drive in drive_list:
+            kitti_data = pykitti.odometry(basedir, drive)
+            _size = size or len(kitti_data.poses)
+            labels = []
+            for i in range(_size-1):
+                T = np.dot(np.linalg.inv(kitti_data.poses[i]), kitti_data.poses[i+1])
+                label = np.linalg.norm(T[:3, 3])
+                labels.append(label)
+            filename1 = kitti_data.cam0_files[:_size-1]
+            filename2 = kitti_data.cam0_files[1:_size]
+            self.data[drive] = [labels, filename1, filename2, kitti_data.poses]
+
+    def plot_drive(self, drive):
+        poses = self.data[drive][3]
+        origins = []
+        for pose in poses:
+            origins.append(np.dot(pose[:3, :], np.array([0, 0, 0, 1]).reshape(-1, 1)))
+        origins = np.concatenate(origins, axis=1).T
+        fig, ax = plt.subplots(1, 3)
+        axis_names = 'xyz'
+        for axis, _ax in enumerate(ax):
+            _ax.plot(origins[:, axis], label=axis_names[axis])
+            _ax.legend()
+
+        fig, ax = plt.subplots(1)
+        ax.plot(origins[:, 1], origins[:, 2])
+        ax.set_xlabel('y')
+        ax.set_ylabel('z')
+        plt.axis('equal')
+        plt.grid('on')
+        ax.legend()
+
+        fig = plt.figure()
+        labels = self.data[drive][0]
+        plt.hist(labels)
+        print('mean: {}, std: {}'.format(np.mean(labels), np.std(labels)))
+        import ipdb; ipdb.set_trace()
 
 def create_dataset(target_size, test_split=.1, val_split=.1, size=None,
         basedir='/home/akreimer/work/dataset'):
@@ -77,12 +99,12 @@ def create_dataset(target_size, test_split=.1, val_split=.1, size=None,
         dataset = tf.data.Dataset.from_tensor_slices((tf.constant(_f1), tf.constant(_f2),
             tf.constant(_l)))
         dataset = dataset.map(functools.partial(_parse_function, target_size=target_size))
-        res.append((dataset, len(_f1)))
+        res.append((dataset, len(_f1), _l))
     return res
 
 def keras_model(target_size):
     model = Sequential()
-    model.add(Conv2D(32, (7, 7), padding='same', input_shape=(target_size[0], target_size[1], 2)))
+    model.add(Conv2D(32, (5, 5), padding='same', name='1_conv2d', input_shape=(target_size[0], target_size[1], 2)))
     model.add(Activation('relu'))
     model.add(Conv2D(32, (3, 3)))
     model.add(Activation('relu'))
@@ -96,12 +118,12 @@ def keras_model(target_size):
     model.add(MaxPooling2D(pool_size=(2, 2)))
     model.add(Dropout(0.25))
 
-    model.add(Conv2D(64, (3, 3), padding='same'))
-    model.add(Activation('relu'))
-    model.add(Conv2D(64, (3, 3)))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.25))
+#    model.add(Conv2D(64, (3, 3), padding='same'))
+#    model.add(Activation('relu'))
+#    model.add(Conv2D(64, (3, 3)))
+#    model.add(Activation('relu'))
+#    model.add(MaxPooling2D(pool_size=(2, 2)))
+#    model.add(Dropout(0.25))
 
     model.add(Flatten())
     model.add(Dense(512))
@@ -133,16 +155,16 @@ def keras_model(target_size):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--kuku', action='store_true')
     args = parser.parse_args()
 
-    checkpoint_path = './checkpoint/cp.ckpt'
     num_epochs = 500
     batch_size = 10
     target_size = np.array([613, 185])/2
     target_size = target_size.astype(int)
-    dataset = create_dataset(target_size=target_size)
+    dataset = create_dataset(target_size=target_size, size=20)
 
-    (train_set, train_set_size), (val_set, val_set_size), (test_set, test_set_size) = dataset
+    (train_set, train_set_size, train_labels), (val_set, val_set_size, _), (test_set, test_set_size, test_labels) = dataset
 
     train_epoch_size = int(train_set_size/batch_size)
     train_set = train_set.batch(batch_size)
@@ -156,19 +178,33 @@ if __name__ == '__main__':
     model = keras_model(target_size)
     adam = tf.keras.optimizers.Adam()
     model.compile(optimizer=adam, loss='mean_squared_error', metrics=['mae'])
+    checkpoint_path = './train_1/cp-{epoch:04d}.ckpt'
+    checkpoint_dir = os.path.dirname(checkpoint_path)
+
+    if args.kuku:
+        dataset = kitti_data()
+        dataset.plot_drive('04')
+        os.exit(0)
+
     if args.test:
-        model.load_weights(checkpoint_path)
         test_epoch_size = test_set_size
         test_set = test_set.batch(1)
         test_set = test_set.repeat(test_epoch_size)
-        loss_metric = model.evaluate(test_set.make_one_shot_iterator(), steps=test_epoch_size,
+        latest_checkpoint = tf.train.latest_checkpoint(checkpoint_dir)
+        model.load_weights(latest_checkpoint)
+        loss, mae = model.evaluate(test_set.make_one_shot_iterator(), steps=test_epoch_size,
                 verbose=1)
+        print('Trained model loss: {:.2f}m'.format(mae))
         labels_predicted = model.predict(test_set.make_one_shot_iterator(), steps=test_epoch_size,
                 verbose=1)
-        import ipdb; ipdb.set_trace()
+
+        delta = labels_predicted.ravel() - np.array(test_labels)
+        plt.plot(delta)
+        plt.show()
     else:
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, save_weights_only=True, verbose=1)
+        tb_callback = keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, write_grads=True, write_graph=True, write_images=True)
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, save_weights_only=True, verbose=1, period=5)
         model.fit(train_set.make_one_shot_iterator(), steps_per_epoch=train_epoch_size, 
                 validation_data=val_set.make_one_shot_iterator(), validation_steps=val_epoch_size,
-                epochs=num_epochs, verbose=1, callbacks=[checkpoint_callback])
+                epochs=num_epochs, verbose=1, callbacks=[checkpoint_callback, tb_callback])
         model.save('_test.hd5')
