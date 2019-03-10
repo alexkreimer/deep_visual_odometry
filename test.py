@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import pykitti
 import functools
 import argparse
+import collections
 import os
 
 def _parse_function(image_path1, image_path2, label, target_size):
@@ -28,9 +29,8 @@ def _parse_function(image_path1, image_path2, label, target_size):
         images.append(tf.image.resize_images(image_decoded, target_size))
     return tf.concat(images, axis=2), label
 
-
-class kitti_data:
-    def __init__(self, size=None, basedir='/home/akreimer/work/dataset'):
+class KittiData:
+    def __init__(self, size=None, target_image_size=None, basedir='/home/akreimer/work/dataset'):
         drive_list = ['00', '01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
         self.data = {}
         for drive in drive_list:
@@ -43,7 +43,13 @@ class kitti_data:
                 labels.append(label)
             filename1 = kitti_data.cam0_files[:_size-1]
             filename2 = kitti_data.cam0_files[1:_size]
-            self.data[drive] = [labels, filename1, filename2, kitti_data.poses]
+
+            try:
+                self.df = pd.concat([self.df, pd.DataFrame.from_dict({'label': labels, 'fn1': filename1,
+                    'fn2': filename2, 'drive': drive, 'poses': kitti_data.poses[1:]})])
+            except AttributeError:
+                self.df = pd.DataFrame.from_dict({'label': labels, 'fn1': filename1, 'fn2': filename2,
+                    'drive': drive, 'poses': kitti_data.poses[1:]})
 
     def plot_drive(self, drive):
         poses = self.data[drive][3]
@@ -70,6 +76,21 @@ class kitti_data:
         plt.hist(labels)
         print('mean: {}, std: {}'.format(np.mean(labels), np.std(labels)))
         import ipdb; ipdb.set_trace()
+
+    def random_train_set(self, target_size, test_split=.1, val_split=.1, size=None):
+        size = self.df.index.size
+        train_val_size = int((1 - test_split)*size)
+        train_size = int((1 - val_split)*train_val_size)
+
+        assert train_val_size > 0
+        assert train_size > 0
+
+        test = self.df.sample(frac=test_split)
+        train_val = self.df[~self.df.index.isin(test.index)]
+        val_df = train_val.sample(frac=val_split)
+        train_df = train_val[~train_val.index.isin(val_df.index)]
+        import ipdb; ipdb.set_trace()
+
 
 def create_dataset(target_size, test_split=.1, val_split=.1, size=None,
         basedir='/home/akreimer/work/dataset'):
@@ -109,14 +130,14 @@ def keras_model(target_size):
     model.add(Conv2D(32, (3, 3)))
     model.add(Activation('relu'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.25))
+    # model.add(Dropout(0.25))
 
     model.add(Conv2D(64, (3, 3), padding='same'))
     model.add(Activation('relu'))
     model.add(Conv2D(64, (3, 3)))
     model.add(Activation('relu'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.25))
+    # model.add(Dropout(0.25))
 
 #    model.add(Conv2D(64, (3, 3), padding='same'))
 #    model.add(Activation('relu'))
@@ -128,7 +149,7 @@ def keras_model(target_size):
     model.add(Flatten())
     model.add(Dense(512))
     model.add(Activation('relu'))
-    model.add(Dropout(0.5))
+    # model.add(Dropout(0.5))
     model.add(Dense(1))
     return model
 #
@@ -158,11 +179,15 @@ if __name__ == '__main__':
     parser.add_argument('--kuku', action='store_true')
     args = parser.parse_args()
 
+
+    data = KittiData()
     num_epochs = 500
     batch_size = 10
     target_size = np.array([613, 185])/2
     target_size = target_size.astype(int)
-    dataset = create_dataset(target_size=target_size, size=20)
+    dataset = create_dataset(target_size=target_size)
+
+    data.random_train_set(target_size=target_size)
 
     (train_set, train_set_size, train_labels), (val_set, val_set_size, _), (test_set, test_set_size, test_labels) = dataset
 
