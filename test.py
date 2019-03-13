@@ -46,7 +46,7 @@ class KittiData:
 
             try:
                 self.df = pd.concat([self.df, pd.DataFrame.from_dict({'label': labels, 'fn1': filename1,
-                    'fn2': filename2, 'drive': drive, 'poses': kitti_data.poses[1:]})])
+                    'fn2': filename2, 'drive': drive, 'poses': kitti_data.poses[1:]})], ignore_index=True)
             except AttributeError:
                 self.df = pd.DataFrame.from_dict({'label': labels, 'fn1': filename1, 'fn2': filename2,
                     'drive': drive, 'poses': kitti_data.poses[1:]})
@@ -75,7 +75,6 @@ class KittiData:
         labels = self.data[drive][0]
         plt.hist(labels)
         print('mean: {}, std: {}'.format(np.mean(labels), np.std(labels)))
-        import ipdb; ipdb.set_trace()
 
     def random_train_set(self, target_size, test_split=.1, val_split=.1, size=None):
         size = self.df.index.size
@@ -87,10 +86,16 @@ class KittiData:
 
         test = self.df.sample(frac=test_split)
         train_val = self.df[~self.df.index.isin(test.index)]
-        val_df = train_val.sample(frac=val_split)
-        train_df = train_val[~train_val.index.isin(val_df.index)]
-        import ipdb; ipdb.set_trace()
-
+        val = train_val.sample(frac=val_split)
+        train = train_val[~train_val.index.isin(val.index)]
+        res = []
+        for _df in [train, val, test]:
+            _f1, _f2, _l = _df['fn1'].tolist(), _df['fn2'].tolist(), _df['label'].tolist()
+            dataset = tf.data.Dataset.from_tensor_slices((tf.constant(_f1), tf.constant(_f2),
+                tf.constant(_l)))
+            dataset = dataset.map(functools.partial(_parse_function, target_size=target_size))
+            res.append((dataset, len(_f1), _l))
+        return res
 
 def create_dataset(target_size, test_split=.1, val_split=.1, size=None,
         basedir='/home/akreimer/work/dataset'):
@@ -130,26 +135,26 @@ def keras_model(target_size):
     model.add(Conv2D(32, (3, 3)))
     model.add(Activation('relu'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    # model.add(Dropout(0.25))
+    model.add(Dropout(0.25))
 
     model.add(Conv2D(64, (3, 3), padding='same'))
     model.add(Activation('relu'))
     model.add(Conv2D(64, (3, 3)))
     model.add(Activation('relu'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    # model.add(Dropout(0.25))
+    model.add(Dropout(0.25))
 
-#    model.add(Conv2D(64, (3, 3), padding='same'))
-#    model.add(Activation('relu'))
-#    model.add(Conv2D(64, (3, 3)))
-#    model.add(Activation('relu'))
-#    model.add(MaxPooling2D(pool_size=(2, 2)))
-#    model.add(Dropout(0.25))
+    model.add(Conv2D(64, (3, 3), padding='same'))
+    model.add(Activation('relu'))
+    model.add(Conv2D(64, (3, 3)))
+    model.add(Activation('relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.25))
 
     model.add(Flatten())
     model.add(Dense(512))
     model.add(Activation('relu'))
-    # model.add(Dropout(0.5))
+    model.add(Dropout(0.5))
     model.add(Dense(1))
     return model
 #
@@ -180,15 +185,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
 
-    data = KittiData()
-    num_epochs = 500
+    num_epochs = 1500
     batch_size = 10
     target_size = np.array([613, 185])/2
     target_size = target_size.astype(int)
-    dataset = create_dataset(target_size=target_size)
-
-    data.random_train_set(target_size=target_size)
-
+    # dataset = create_dataset(target_size=target_size)
+    data = KittiData()
+    dataset = data.random_train_set(target_size=target_size)
     (train_set, train_set_size, train_labels), (val_set, val_set_size, _), (test_set, test_set_size, test_labels) = dataset
 
     train_epoch_size = int(train_set_size/batch_size)
@@ -228,7 +231,7 @@ if __name__ == '__main__':
         plt.show()
     else:
         tb_callback = keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, write_grads=True, write_graph=True, write_images=True)
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, save_weights_only=True, verbose=1, period=5)
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, save_weights_only=True, verbose=1)
         model.fit(train_set.make_one_shot_iterator(), steps_per_epoch=train_epoch_size, 
                 validation_data=val_set.make_one_shot_iterator(), validation_steps=val_epoch_size,
                 epochs=num_epochs, verbose=1, callbacks=[checkpoint_callback, tb_callback])
